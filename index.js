@@ -1,12 +1,63 @@
 'use strict';
 
+require('dotenv').config();
+
 const Path = require('path');
 const Hapi = require('hapi');
 const Inert = require('inert');
 const fs = require('fs');
-require('dotenv').config();
-
+const fse = require('fs-extra');
+const dbio = require('mongodb-io-native');
 const server = new Hapi.Server({connections: {routes: {files: {relativeTo: Path.join(__dirname, 'dump')}}}});
+
+
+const config = {
+  out: 'dump'
+};
+if (process.env.MONGO_HOST) config.host = process.env.MONGO_HOST;
+if (process.env.MONGO_PORT) config.port = process.env.MONGO_PORT;
+
+const exec = require('child_process').exec;
+
+const getDbs = (onComplete, onError) => {
+  const host = config.host ? `--host ${config.host}` : '';
+  const port = config.port ? `--port ${config.port}` : '';
+  exec(`mongo ${host}${port} --eval "printjson(db.adminCommand('listDatabases'))"`, (err, out) => {
+    if (err) {
+      onError(err.toString());
+      return;
+    }
+    console.log(out);
+    let r = out.replace(/[\s\S]*connecting to:[\s\S]+\n({[\s\S]+)/m, '$1');
+    r = JSON.parse(r);
+    r = r.databases.filter((v) => {
+      return v.empty === false;
+    });
+    r = r.map((v) => {
+      return v.name;
+    });
+    onComplete(r);
+  });
+};
+
+const dbExport = (dbName, onError, onComplete) => {
+  getDbs(
+    (dbs) => {
+      if (dbs.indexOf(dbName) < 0) {
+        onError(`Database ${dbName} does not exists or empty`);
+        return;
+      }
+      dbio.export({
+        config,
+        dbs: [dbName]
+      }).then((file) => {
+        fse.copySync(file, `dump/${dbName}.tgz`);
+        onComplete(`/dump/${dbName}.tgz`);
+      });
+    },
+    onError
+  );
+};
 
 server.connection({port: process.env.PORT || 3000});
 server.register(Inert, () => {
@@ -14,56 +65,20 @@ server.register(Inert, () => {
 
 const dumpHandler = {directory: {path: '.', redirectToSlash: true, index: true}};
 
-const getDumpFunctions = (db, dbName, collections) => {
-  let dumpFunctions = [];
-  for (let i = 0; i < collections.length; i++) {
-    ((collectionName) => {
-      dumpFunctions.push(new Promise((resolve, reject) => {
-        db.collection(collectionName).find().toArray((err, data) => {
-          if (err) {
-            reject(err);
-            return;
-          }
-          let r = {};
-          r.collection = collectionName;
-          r.data = data;
-          resolve(r);
-        });
-      }));
-    })(collections[i]);
-  }
-  return dumpFunctions;
-};
-
 const makeDumpHandler = (request, reply) => {
   if (!request.query.dbName) {
     reply({error: 'db name not defined'}).code(500);
     return;
   }
-  const dbName = request.query.dbName;
-  require('mongodb').MongoClient.connect('mongodb://' +
-    (process.env.MONGO_HOST || 'localhost') +
-    ':' +
-    (process.env.MONGO_PORT || '27017') +
-    '/' + dbName, function (err, db) {
-    console.log('db connected');
-    db.listCollections().toArray((err, collections) => {
-      let collectionNames = collections.map((collection) => {
-        return collection.name;
-      }).filter((name) => {
-        return !/^system\.*/.test(name);
-      });
-      console.log('exporting collections: ' + collectionNames.toString());
-      Promise.all(getDumpFunctions(db, dbName, collectionNames)).then((r) => {
-        fs.writeFileSync('./dump/' + dbName + '.json', JSON.stringify(r));
-        reply({
-          file: '/dump/' + dbName + '.json'
-        });
-      });
-    });
-
-  });
-
+  dbExport(
+    request.query.dbName,
+    (error) => {
+      console.log(error);
+      reply({error});
+    }, (file) => {
+      reply({file});
+    }
+  );
 };
 
 server.register(require('hapi-auth-header'), function (err) {

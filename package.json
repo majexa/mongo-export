@@ -1,5 +1,5 @@
 {
-  "name": "helpme-db-export",
+  "name": "mongo-export",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
@@ -10,9 +10,10 @@
   "license": "ISC",
   "dependencies": {
     "dotenv": "^4.0.0",
+    "fs-extra": "^3.0.1",
     "hapi": "^16.1.1",
     "hapi-auth-header": "^2.2.0",
     "inert": "^4.2.0",
-    "mongodb": "^2.2.25"
+    "mongodb-io-native": "^0.1.1"
   }
 }
